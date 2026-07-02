@@ -42,7 +42,7 @@ Users can remove saved app settings through macOS system settings or by deleting
 
 For privacy questions, open an issue at:
 
-<https://github.com/rioriost/phorganize/issues>
+<https://github.com/rioriost/Phorganize/issues>
 
 ---
 
@@ -90,4 +90,4 @@ Phorganize はデータを第三者と共有しません。
 
 プライバシーに関する質問は、以下の GitHub Issues から連絡してください。
 
-<https://github.com/rioriost/phorganize/issues>
+<https://github.com/rioriost/Phorganize/issues>
