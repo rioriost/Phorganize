@@ -138,7 +138,7 @@ final class AppModel: ObservableObject {
         resultLines = []
         phase = L10n.string("phase.readingMetadata")
 
-        Task {
+        Task { [self] in
             let sourceAccess = source.startAccessingSecurityScopedResource()
             let destinationAccess = destination.startAccessingSecurityScopedResource()
             defer {
