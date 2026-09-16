@@ -14,6 +14,12 @@ struct PhorganizeMacApp: App {
         }
         .defaultSize(width: 980, height: 940)
         .windowStyle(.titleBar)
+        .commands {
+            CommandGroup(replacing: .help) {
+                Link(L10n.string("help.privacyPolicy"), destination: URL(string: "https://github.com/rioriost/Phorganize/blob/main/PRIVACY.md")!)
+                Link(L10n.string("help.support"), destination: URL(string: "https://github.com/rioriost/Phorganize/issues")!)
+            }
+        }
     }
 }
 

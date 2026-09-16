@@ -60,3 +60,5 @@
 
 "mode.copy" = "コピー";
 "mode.move" = "移動";
+"help.privacyPolicy" = "プライバシーポリシー";
+"help.support" = "Phorganize サポート";

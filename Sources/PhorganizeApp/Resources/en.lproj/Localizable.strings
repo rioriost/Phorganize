@@ -1,4 +1,6 @@
 "action.copyFiles" = "Copy files";
+"help.privacyPolicy" = "Privacy Policy";
+"help.support" = "Phorganize Support";
 "action.moveFiles" = "Move files";
 
 "phase.ready" = "Ready";
