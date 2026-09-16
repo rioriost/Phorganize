@@ -32,6 +32,11 @@
 "source.summaryMissing" = "The saved source path does not exist.";
 "source.summaryScanning" = "Scanning target files...";
 
+"location.saveFailed" = "Could not save access to %@: %@. Select the folder again before running.";
+"location.restoreFailed" = "Could not restore access to %@: %@. Select the folder again before running.";
+"location.bookmarkMissing" = "Saved access to %@ is missing. Select the folder again before running.";
+"location.selectionRequired" = "Select a source folder and a destination folder before running.";
+
 "destination.title" = "Destination folder";
 "destination.subtitle" = "Drag the external SSD archive folder here, or choose one.";
 "destination.choose" = "Choose Destination";

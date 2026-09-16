@@ -34,6 +34,10 @@ let package = Package(
         .testTarget(
             name: "PhorganizeCoreTests",
             dependencies: ["PhorganizeCore"]
+        ),
+        .testTarget(
+            name: "PhorganizeAppTests",
+            dependencies: ["PhorganizeApp", "PhorganizeCore"]
         )
     ]
 )

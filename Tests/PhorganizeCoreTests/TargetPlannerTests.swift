@@ -22,7 +22,7 @@ final class TargetPlannerTests: XCTestCase {
             MediaFileCandidate(sourceURL: URL(fileURLWithPath: "/tmp/IMG_0001.cr3"), metadata: metadata)
         ]
 
-        let plan = TargetPlanner.makePlan(candidates: candidates, destinationURL: destination, options: options)
+        let plan = try TargetPlanner.makePlan(candidates: candidates, destinationURL: destination, options: options)
         let targets = plan.map { $0.targetURL.path.replacingOccurrences(of: destination.path, with: "") }
 
         XCTAssertEqual(targets, [
@@ -40,7 +40,7 @@ final class TargetPlannerTests: XCTestCase {
             timezoneOffsetHours: 9
         )
 
-        let plan = TargetPlanner.makePlan(
+        let plan = try TargetPlanner.makePlan(
             candidates: [
                 MediaFileCandidate(sourceURL: URL(fileURLWithPath: "/tmp/clip.MP4"), metadata: metadata)
             ],
@@ -66,7 +66,7 @@ final class TargetPlannerTests: XCTestCase {
             timezoneIdentifier: "UTC"
         )
 
-        let plan = TargetPlanner.makePlan(
+        let plan = try TargetPlanner.makePlan(
             candidates: [
                 MediaFileCandidate(sourceURL: URL(fileURLWithPath: "/tmp/photo.CR3"), metadata: metadata)
             ],
@@ -96,7 +96,7 @@ final class TargetPlannerTests: XCTestCase {
             timezoneIdentifier: "UTC"
         )
 
-        let plan = TargetPlanner.makePlan(
+        let plan = try TargetPlanner.makePlan(
             candidates: [
                 MediaFileCandidate(sourceURL: URL(fileURLWithPath: "/tmp/photo.CR3"), metadata: metadata)
             ],
@@ -125,7 +125,7 @@ final class TargetPlannerTests: XCTestCase {
         )
         FileManager.default.createFile(atPath: existingTarget.path, contents: Data("same".utf8))
 
-        let result = TargetPlanner.makePlanningResult(
+        let result = try TargetPlanner.makePlanningResult(
             candidates: [
                 MediaFileCandidate(sourceURL: URL(fileURLWithPath: "/tmp/source.jpg"), metadata: metadata)
             ],
@@ -152,7 +152,7 @@ final class TargetPlannerTests: XCTestCase {
         )
         FileManager.default.createFile(atPath: existingTarget.path, contents: Data("different".utf8))
 
-        let result = TargetPlanner.makePlanningResult(
+        let result = try TargetPlanner.makePlanningResult(
             candidates: [
                 MediaFileCandidate(sourceURL: URL(fileURLWithPath: "/tmp/source.jpg"), metadata: metadata)
             ],

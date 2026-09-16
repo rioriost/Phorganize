@@ -49,20 +49,20 @@ public struct MediaMetadataExtractor {
         )
         let lensModel = normalizedCameraModel(exif?[kCGImagePropertyExifLensModel as String] as? String)
 
-        let dateString = exif?[kCGImagePropertyExifDateTimeOriginal as String] as? String
-            ?? exif?[kCGImagePropertyExifDateTimeDigitized as String] as? String
-            ?? tiff?[kCGImagePropertyTIFFDateTime as String] as? String
-
-        guard let dateString,
-              let date = parseEXIFDate(
-                dateString,
-                offset: exif?[kCGImagePropertyExifOffsetTimeOriginal as String] as? String,
-                timeZone: timeZone
-              ) else {
-            return nil
+        let dateCandidates: [(String?, String?)] = [
+            (exif?[kCGImagePropertyExifDateTimeOriginal as String] as? String,
+             exif?[kCGImagePropertyExifOffsetTimeOriginal as String] as? String),
+            (exif?[kCGImagePropertyExifDateTimeDigitized as String] as? String,
+             exif?[kCGImagePropertyExifOffsetTimeDigitized as String] as? String),
+            (tiff?[kCGImagePropertyTIFFDateTime as String] as? String,
+             exif?[kCGImagePropertyExifOffsetTime as String] as? String)
+        ]
+        for (value, offset) in dateCandidates {
+            if let value, let date = parseEXIFDate(value, offset: offset, timeZone: timeZone) {
+                return MediaMetadata(creationDate: date, cameraModel: cameraModel, lensModel: lensModel, source: .image)
+            }
         }
-
-        return MediaMetadata(creationDate: date, cameraModel: cameraModel, lensModel: lensModel, source: .image)
+        return extractFileAttributeMetadata(from: url, cameraModel: cameraModel, lensModel: lensModel)
     }
 
     private func extractVideoMetadata(from url: URL, timeZone: TimeZone) async -> MediaMetadata? {
@@ -101,7 +101,7 @@ public struct MediaMetadataExtractor {
                 creationDate = parseVideoDate(value, timeZone: timeZone)
             }
 
-            if cameraModel == nil,
+            if cameraModel == nil, !key.contains("lens"),
                key.contains("model") || key.contains("camera") {
                 cameraModel = normalizedCameraModel(value)
             }
@@ -115,17 +115,21 @@ public struct MediaMetadataExtractor {
             return MediaMetadata(creationDate: creationDate, cameraModel: cameraModel, lensModel: lensModel, source: .video)
         }
 
-        return extractFileAttributeMetadata(from: url)
+        return extractFileAttributeMetadata(from: url, cameraModel: cameraModel, lensModel: lensModel)
     }
 
-    private func extractFileAttributeMetadata(from url: URL) -> MediaMetadata? {
+    private func extractFileAttributeMetadata(
+        from url: URL,
+        cameraModel: String? = nil,
+        lensModel: String? = nil
+    ) -> MediaMetadata? {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
               let date = attributes[.creationDate] as? Date
                 ?? attributes[.modificationDate] as? Date else {
             return nil
         }
 
-        return MediaMetadata(creationDate: date, cameraModel: nil, lensModel: nil, source: .fileAttributes)
+        return MediaMetadata(creationDate: date, cameraModel: cameraModel, lensModel: lensModel, source: .fileAttributes)
     }
 
     private func parseEXIFDate(_ value: String, offset: String?, timeZone: TimeZone) -> Date? {

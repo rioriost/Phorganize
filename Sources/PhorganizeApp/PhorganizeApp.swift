@@ -19,26 +19,64 @@ struct PhorganizeMacApp: App {
 
 @MainActor
 final class AppModel: ObservableObject {
+    struct BookmarkOperations {
+        struct Resolution {
+            let url: URL
+            let isStale: Bool
+        }
+
+        var create: (URL) throws -> Data
+        var resolve: (Data) throws -> Resolution
+
+        static let system = BookmarkOperations(
+            create: { url in
+                try url.bookmarkData(
+                    options: [.withSecurityScope],
+                    includingResourceValuesForKeys: nil,
+                    relativeTo: nil
+                )
+            },
+            resolve: { data in
+                var stale = false
+                let url = try URL(
+                    resolvingBookmarkData: data,
+                    options: [.withSecurityScope],
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &stale
+                )
+                return Resolution(url: url, isStale: stale)
+            }
+        )
+    }
+
+    struct RunContext {
+        let sourceURL: URL
+        let destinationURL: URL
+        let options: OrganizationOptions
+    }
+
+    private struct Location {
+        var path = ""
+        var url: URL?
+        var error: String?
+    }
+
+    private struct LocationError: LocalizedError {
+        let message: String
+
+        var errorDescription: String? { message }
+    }
+
     private struct RunSignature: Equatable {
         var sourcePath: String
         var destinationPath: String
         var options: OrganizationOptions
     }
 
-    @Published var sourcePath: String = "" {
-        didSet {
-            saveLocation(path: sourcePath, bookmarkKey: Keys.sourceBookmark, pathKey: Keys.sourcePath)
-            markPendingChange()
-            refreshSourceSummary()
-        }
-    }
-
-    @Published var destinationPath: String = "" {
-        didSet {
-            saveLocation(path: destinationPath, bookmarkKey: Keys.destinationBookmark, pathKey: Keys.destinationPath)
-            markPendingChange()
-        }
-    }
+    @Published private(set) var sourcePath = ""
+    @Published private(set) var destinationPath = ""
+    @Published private(set) var sourceSelectionError: String?
+    @Published private(set) var destinationSelectionError: String?
 
     @Published var options: OrganizationOptions = .default {
         didSet {
@@ -59,7 +97,10 @@ final class AppModel: ObservableObject {
     @Published var sourceSummaryText = ""
 
     private let organizer = FileOrganizer()
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
+    private let bookmarks: BookmarkOperations
+    private var sourceURL: URL?
+    private var destinationURL: URL?
     private var sourceSummaryRequestID = UUID()
 
     private enum Keys {
@@ -70,9 +111,17 @@ final class AppModel: ObservableObject {
         static let options = "phorganize.options"
     }
 
-    init() {
-        sourcePath = loadPath(bookmarkKey: Keys.sourceBookmark, pathKey: Keys.sourcePath)
-        destinationPath = loadPath(bookmarkKey: Keys.destinationBookmark, pathKey: Keys.destinationPath)
+    init(defaults: UserDefaults = .standard, bookmarks: BookmarkOperations = .system) {
+        self.defaults = defaults
+        self.bookmarks = bookmarks
+        let source = loadLocation(bookmarkKey: Keys.sourceBookmark, pathKey: Keys.sourcePath)
+        sourcePath = source.path
+        sourceURL = source.url
+        sourceSelectionError = source.error
+        let destination = loadLocation(bookmarkKey: Keys.destinationBookmark, pathKey: Keys.destinationPath)
+        destinationPath = destination.path
+        destinationURL = destination.url
+        destinationSelectionError = destination.error
         options = loadOptions()
         refreshSourceSummary()
     }
@@ -80,8 +129,10 @@ final class AppModel: ObservableObject {
     var canRun: Bool {
         !isProcessing
             && hasPendingChange
-            && FileManager.default.fileExists(atPath: sourcePath)
-            && FileManager.default.fileExists(atPath: destinationPath)
+            && sourceSelectionError == nil
+            && destinationSelectionError == nil
+            && locationExists(sourceURL)
+            && locationExists(destinationURL)
     }
 
     var actionTitle: String {
@@ -108,28 +159,64 @@ final class AppModel: ObservableObject {
 
     func chooseSource() {
         chooseFolder { [weak self] url in
-            self?.sourcePath = url.path
+            self?.acceptSource(url)
         }
     }
 
     func chooseDestination() {
         chooseFolder { [weak self] url in
-            self?.destinationPath = url.path
+            self?.acceptDestination(url)
         }
     }
 
     func acceptSource(_ url: URL) {
-        sourcePath = url.path
+        do {
+            let selectedURL = try saveLocation(url: url, bookmarkKey: Keys.sourceBookmark, pathKey: Keys.sourcePath)
+            sourceURL = selectedURL
+            sourcePath = selectedURL.path
+            sourceSelectionError = nil
+            markPendingChange()
+        } catch {
+            sourceSelectionError = L10n.format("location.saveFailed", url.path, error.localizedDescription)
+        }
+        refreshSourceSummary()
     }
 
     func acceptDestination(_ url: URL) {
-        destinationPath = url.path
+        do {
+            let selectedURL = try saveLocation(url: url, bookmarkKey: Keys.destinationBookmark, pathKey: Keys.destinationPath)
+            destinationURL = selectedURL
+            destinationPath = selectedURL.path
+            destinationSelectionError = nil
+            markPendingChange()
+        } catch {
+            destinationSelectionError = L10n.format("location.saveFailed", url.path, error.localizedDescription)
+        }
+    }
+
+    func makeRunContext() throws -> RunContext {
+        if let error = sourceSelectionError ?? destinationSelectionError {
+            throw LocationError(message: error)
+        }
+        guard let sourceURL, let destinationURL else {
+            throw LocationError(message: L10n.string("location.selectionRequired"))
+        }
+        return RunContext(sourceURL: sourceURL, destinationURL: destinationURL, options: options)
     }
 
     func run() {
-        let source = resolvedURL(bookmarkKey: Keys.sourceBookmark, fallbackPath: sourcePath)
-        let destination = resolvedURL(bookmarkKey: Keys.destinationBookmark, fallbackPath: destinationPath)
-        let selectedOptions = options
+        guard !isProcessing else { return }
+        let context: RunContext
+        do {
+            context = try makeRunContext()
+        } catch {
+            phase = L10n.string("phase.failed")
+            resultLines = [error.localizedDescription]
+            return
+        }
+        let source = context.sourceURL
+        let destination = context.destinationURL
+        let selectedOptions = context.options
         let runSignature = currentRunSignature()
 
         isProcessing = true
@@ -256,22 +343,27 @@ final class AppModel: ObservableObject {
     }
 
     private func refreshSourceSummary() {
-        let path = sourcePath
-        guard FileManager.default.fileExists(atPath: path) else {
-            sourceSummaryText = path.isEmpty ? "" : L10n.string("source.summaryMissing")
+        let requestID = UUID()
+        sourceSummaryRequestID = requestID
+        guard sourceSelectionError == nil, let sourceURL else {
+            sourceSummaryText = ""
             return
         }
 
-        let requestID = UUID()
-        sourceSummaryRequestID = requestID
         let recursive = options.recursive
-        let sourceURL = resolvedURL(bookmarkKey: Keys.sourceBookmark, fallbackPath: path)
         sourceSummaryText = L10n.string("source.summaryScanning")
 
         Task {
             let sourceAccess = sourceURL.startAccessingSecurityScopedResource()
             defer {
                 if sourceAccess { sourceURL.stopAccessingSecurityScopedResource() }
+            }
+
+            guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+                if self.sourceSummaryRequestID == requestID {
+                    self.sourceSummaryText = L10n.string("source.summaryMissing")
+                }
+                return
             }
 
             do {
@@ -329,54 +421,59 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func saveLocation(path: String, bookmarkKey: String, pathKey: String) {
-        defaults.set(path, forKey: pathKey)
-
-        guard !path.isEmpty else {
-            defaults.removeObject(forKey: bookmarkKey)
-            return
+    private func locationExists(_ url: URL?) -> Bool {
+        guard let url else { return false }
+        let access = url.startAccessingSecurityScopedResource()
+        defer {
+            if access { url.stopAccessingSecurityScopedResource() }
         }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
 
-        let url = URL(fileURLWithPath: path)
-        if let bookmark = try? url.bookmarkData(
-            options: [.withSecurityScope],
-            includingResourceValuesForKeys: nil,
-            relativeTo: nil
-        ) {
-            defaults.set(bookmark, forKey: bookmarkKey)
+    private func saveLocation(url: URL, bookmarkKey: String, pathKey: String) throws -> URL {
+        let access = url.startAccessingSecurityScopedResource()
+        defer {
+            if access { url.stopAccessingSecurityScopedResource() }
+        }
+        let data = try bookmarks.create(url)
+        let resolved = try bookmarks.resolve(data)
+        let bookmark = try refreshedBookmark(data, resolution: resolved)
+        defaults.set(bookmark, forKey: bookmarkKey)
+        defaults.set(resolved.url.path, forKey: pathKey)
+        return resolved.url
+    }
+
+    private func loadLocation(bookmarkKey: String, pathKey: String) -> Location {
+        let path = defaults.string(forKey: pathKey) ?? ""
+        guard let data = defaults.data(forKey: bookmarkKey) else {
+            return Location(
+                path: path,
+                error: path.isEmpty ? nil : L10n.format("location.bookmarkMissing", path)
+            )
+        }
+        do {
+            let resolved = try bookmarks.resolve(data)
+            let bookmark = try refreshedBookmark(data, resolution: resolved)
+            if resolved.isStale {
+                defaults.set(bookmark, forKey: bookmarkKey)
+            }
+            defaults.set(resolved.url.path, forKey: pathKey)
+            return Location(path: resolved.url.path, url: resolved.url)
+        } catch {
+            return Location(
+                path: path,
+                error: L10n.format("location.restoreFailed", path, error.localizedDescription)
+            )
         }
     }
 
-    private func loadPath(bookmarkKey: String, pathKey: String) -> String {
-        if let data = defaults.data(forKey: bookmarkKey) {
-            var stale = false
-            if let url = try? URL(
-                resolvingBookmarkData: data,
-                options: [.withSecurityScope],
-                relativeTo: nil,
-                bookmarkDataIsStale: &stale
-            ) {
-                return url.path
-            }
+    private func refreshedBookmark(_ data: Data, resolution: BookmarkOperations.Resolution) throws -> Data {
+        guard resolution.isStale else { return data }
+        let access = resolution.url.startAccessingSecurityScopedResource()
+        defer {
+            if access { resolution.url.stopAccessingSecurityScopedResource() }
         }
-
-        return defaults.string(forKey: pathKey) ?? ""
-    }
-
-    private func resolvedURL(bookmarkKey: String, fallbackPath: String) -> URL {
-        if let data = defaults.data(forKey: bookmarkKey) {
-            var stale = false
-            if let url = try? URL(
-                resolvingBookmarkData: data,
-                options: [.withSecurityScope],
-                relativeTo: nil,
-                bookmarkDataIsStale: &stale
-            ) {
-                return url
-            }
-        }
-
-        return URL(fileURLWithPath: fallbackPath)
+        return try bookmarks.create(resolution.url)
     }
 
     private func saveOptions() {
@@ -405,8 +502,8 @@ struct ContentView: View {
                         title: L10n.string("source.title"),
                         subtitle: L10n.string("source.subtitle"),
                         path: model.sourcePath,
-                        detailText: model.sourceSummaryText,
-                        detailIsWarning: false,
+                        detailText: model.sourceSelectionError ?? model.sourceSummaryText,
+                        detailIsWarning: model.sourceSelectionError != nil,
                         buttonTitle: L10n.string("source.choose"),
                         onChoose: model.chooseSource,
                         onDropURL: model.acceptSource
@@ -418,8 +515,8 @@ struct ContentView: View {
                         title: L10n.string("destination.title"),
                         subtitle: L10n.string("destination.subtitle"),
                         path: model.destinationPath,
-                        detailText: model.destinationWarningText,
-                        detailIsWarning: !model.destinationWarningText.isEmpty,
+                        detailText: model.destinationSelectionError ?? model.destinationWarningText,
+                        detailIsWarning: model.destinationSelectionError != nil || !model.destinationWarningText.isEmpty,
                         buttonTitle: L10n.string("destination.choose"),
                         onChoose: model.chooseDestination,
                         onDropURL: model.acceptDestination

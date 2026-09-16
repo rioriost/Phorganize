@@ -32,6 +32,11 @@
 "source.summaryMissing" = "保存済みの分類元パスが存在しません。";
 "source.summaryScanning" = "対象ファイルを確認中...";
 
+"location.saveFailed" = "%@ へのアクセスを保存できませんでした: %@。実行前にフォルダを選択し直してください。";
+"location.restoreFailed" = "%@ へのアクセスを復元できませんでした: %@。実行前にフォルダを選択し直してください。";
+"location.bookmarkMissing" = "%@ への保存済みアクセスがありません。実行前にフォルダを選択し直してください。";
+"location.selectionRequired" = "実行前に分類元と分類先のフォルダを選択してください。";
+
 "destination.title" = "分類先フォルダ";
 "destination.subtitle" = "外付けSSDなどの保存先フォルダをここにドラッグするか、選択してください。";
 "destination.choose" = "分類先を選択";

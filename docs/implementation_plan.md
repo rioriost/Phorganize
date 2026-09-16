@@ -43,7 +43,7 @@ The old performance bottlenecks are:
    - file attributes as a last-resort creation date only for otherwise supported media files.
 5. Process metadata and copies concurrently with configurable bounded concurrency, defaulting to a hardware-aware value.
 6. Prefer same-volume shallow copies via APFS clone (`clonefile`) when possible, then fall back to regular copy.
-7. Implement move mode as copy to a temporary destination, verify size, atomically promote, then delete source.
+7. Implement move mode as copy to a temporary destination, verify size and SHA-256 content, atomically promote without replacement, then delete an unchanged source.
 
 ## Architecture
 
@@ -85,15 +85,18 @@ Tests/
 - `OrganizationOptions`
   - `recursive`
   - `includeCameraFolder`
+  - `includeLensFolder`
   - `renameByDate`
   - `extensionCase` (`preserve`, `lower`, `upper`)
   - `operationMode` (`copy`, `move`)
   - `timezoneOffsetHours`
+  - `timezoneIdentifier`
   - `metadataConcurrency`
   - `copyConcurrency`
 - `MediaMetadata`
   - `creationDate`
   - `cameraModel`
+  - `lensModel`
   - `sourceKind`
 - `PlannedFile`
   - source URL
@@ -116,21 +119,25 @@ For each valid media file:
 5. Extension:
    - preserve/lower/upper according to options.
 6. Avoid collisions across the new batch and existing destination files.
+   - Respect the destination volume's case-sensitivity and canonical Unicode names.
+   - Search existing unnumbered and numbered names for identical content before allocating a new name, including when the import batch changes.
    - Single unique files use no suffix when possible.
    - Duplicate or colliding renamed files use `_1`, `_2`, ... before the extension.
 
 ## Concurrency and I/O plan
 
-- Enumerate source files once, filtering unsupported extensions before metadata reads.
+- Enumerate source files once, filtering unsupported extensions before metadata reads. Enumeration and attribute errors fail planning explicitly.
 - Use `withTaskGroup` plus an async semaphore to bound metadata extraction. The default is based on CPU count, capped to avoid overwhelming Spotlight/ImageIO/AVFoundation.
 - Use a second bounded task group for copy/move. The default is lower than metadata concurrency because large media files are I/O-bound.
-- Each copy writes to a hidden temporary file in the target directory, verifies file size, then moves the temporary file into the final path.
+- Each copy writes to a hidden temporary file in the target directory, verifies file size and unchanged source state, then uses `renameatx_np(RENAME_EXCL)` to promote it without replacing existing data.
 - On same-volume APFS destinations, try `clonefile` first to create a shallow copy. If it fails, fall back to `FileManager.copyItem`.
-- Move mode deletes the source only after the final target exists and size verification succeeds.
+- Move mode additionally compares SHA-256 content through validated file descriptors. Source device/inode, size, mtime and ctime must remain unchanged before deletion.
+- A source-deletion failure after a successful copy is an explicit partial failure; both files remain. Existing-identical skips leave the source intact in either mode.
+- The source must not be edited during an import. These checks are not an exclusive lock against arbitrary external writers or a power-loss durability guarantee.
 
-## Initial implementation scope
+## Current implementation scope
 
-The first implementation will provide:
+The implementation provides:
 
 - a buildable SwiftUI macOS app executable;
 - folder drag/drop and picker for source/destination;
@@ -139,6 +146,14 @@ The first implementation will provide:
 - native metadata extraction for images and movies;
 - bounded parallel planning and execution;
 - shallow-copy fallback logic;
-- basic unit tests for deterministic target planning.
+- core regression tests for naming, metadata, concurrent moves, verification and I/O failures;
+- app-state tests covering independent windows, execution snapshots and bookmark errors;
+- sandbox entitlements, privacy manifest and Xcode app packaging.
 
-Future refinements can add sandbox entitlements/Xcode project packaging, richer preview tables, cancellation, per-file retry, and optional hashing verification.
+Each window owns its selected security-scoped URLs. A run snapshots those URLs and its options together, rather than looking up another window's persisted bookmarks. Bookmark creation/restoration/renewal failures are shown to the user and require reselection.
+
+EXIF date candidates use their corresponding offset tags. Missing dates fall back to file attributes without discarding camera/lens fields. Explicit timezone identifiers take precedence over legacy fixed offsets; an explicit offset without an identifier is honored independently of the machine's timezone.
+
+`TargetPlanner.makePlan` and `makePlanningResult` now throw on destination discovery or comparison errors. Core-package callers must use `try`; I/O failures are no longer interpreted as unequal content.
+
+Future refinements can add richer preview tables, cancellation, per-file retry, and an explicit crash-recovery/durability protocol.

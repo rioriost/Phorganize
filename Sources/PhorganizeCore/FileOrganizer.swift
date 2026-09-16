@@ -31,8 +31,42 @@ actor AsyncSemaphore {
     }
 }
 
+struct DestinationNameRules {
+    let caseSensitive: Bool
+
+    func key(_ value: String) -> String {
+        let normalized = value.precomposedStringWithCanonicalMapping
+        return caseSensitive ? normalized : normalized.folding(
+            options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX")
+        )
+    }
+
+    static func read(at destination: URL, fileManager: FileManager) throws -> Self {
+        var existing = destination.standardizedFileURL
+        while !fileManager.fileExists(atPath: existing.path), existing.path != "/" {
+            existing.deleteLastPathComponent()
+        }
+        let values = try existing.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
+        guard let caseSensitive = values.volumeSupportsCaseSensitiveNames else {
+            throw OrganizerError.destinationVolumeUnknown(existing.path)
+        }
+        return Self(caseSensitive: caseSensitive)
+    }
+}
+
+private func fileEntryExists(_ url: URL) throws -> Bool {
+    var info = stat()
+    let result = url.withUnsafeFileSystemRepresentation { path in
+        guard let path else { return Int32(-1) }
+        return lstat(path, &info)
+    }
+    if result == 0 { return true }
+    if errno == ENOENT { return false }
+    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+}
+
 public struct TargetPlanner {
-    public typealias ExistingFileComparator = (_ sourceURL: URL, _ existingTargetURL: URL) -> Bool
+    public typealias ExistingFileComparator = (_ sourceURL: URL, _ existingTargetURL: URL) throws -> Bool
 
     private struct Draft {
         var sourceURL: URL
@@ -51,8 +85,8 @@ public struct TargetPlanner {
         candidates: [MediaFileCandidate],
         destinationURL: URL,
         options: OrganizationOptions
-    ) -> [PlannedFile] {
-        makePlanningResult(
+    ) throws -> [PlannedFile] {
+        try makePlanningResult(
             candidates: candidates,
             destinationURL: destinationURL,
             options: options,
@@ -64,46 +98,69 @@ public struct TargetPlanner {
         candidates: [MediaFileCandidate],
         destinationURL: URL,
         options: OrganizationOptions,
+        fileManager: FileManager = .default,
         existingFileComparator: ExistingFileComparator
-    ) -> TargetPlanningResult {
+    ) throws -> TargetPlanningResult {
+        let nameRules = try DestinationNameRules.read(at: destinationURL, fileManager: fileManager)
         let sortedCandidates = candidates.sorted { $0.sourceURL.path < $1.sourceURL.path }
         let drafts = sortedCandidates.map {
             makeDraft(candidate: $0, destinationURL: destinationURL, options: options)
         }
-        let grouped = Dictionary(grouping: drafts, by: \.key)
+        let grouped = Dictionary(grouping: drafts) { nameRules.key($0.key) }
         var usedTargets = Set<String>()
         var planned: [PlannedFile] = []
         var existingIdenticalFiles: [ExistingIdenticalFile] = []
+        var directoryEntries: [String: [URL]] = [:]
+        var existingFamilies: [String: [URL]] = [:]
 
         for var draft in drafts {
-            draft.requiresSequence = (grouped[draft.key]?.count ?? 0) > 1
+            let draftKey = nameRules.key(draft.key)
+            draft.requiresSequence = (grouped[draftKey]?.count ?? 0) > 1
+            if existingFamilies[draftKey] == nil {
+                let directoryKey = nameRules.key(draft.directoryURL.path)
+                if directoryEntries[directoryKey] == nil {
+                    directoryEntries[directoryKey] = try fileEntryExists(draft.directoryURL)
+                        ? fileManager.contentsOfDirectory(
+                            at: draft.directoryURL, includingPropertiesForKeys: nil
+                        ).map { draft.directoryURL.appendingPathComponent($0.lastPathComponent) }
+                        : []
+                }
+                existingFamilies[draftKey] = (directoryEntries[directoryKey] ?? [])
+                    .filter { sequence(of: $0, for: draft, rules: nameRules) != nil }
+                    .sorted {
+                        let left = sequence(of: $0, for: draft, rules: nameRules) ?? 0
+                        let right = sequence(of: $1, for: draft, rules: nameRules) ?? 0
+                        return left == right ? $0.path < $1.path : left < right
+                    }
+            }
+
+            var identicalTarget: URL?
+            for target in existingFamilies[draftKey] ?? [] {
+                let attributes = try fileManager.attributesOfItem(atPath: target.path)
+                if attributes[.type] as? FileAttributeType == .typeRegular,
+                   try existingFileComparator(draft.sourceURL, target) {
+                    identicalTarget = target
+                    break
+                }
+            }
+            if let identicalTarget {
+                existingIdenticalFiles.append(
+                    ExistingIdenticalFile(sourceURL: draft.sourceURL, existingTargetURL: identicalTarget)
+                )
+                continue
+            }
 
             var sequence = draft.requiresSequence ? 1 : 0
             while true {
                 let targetURL = makeTargetURL(from: draft, sequence: sequence)
+                let targetKey = nameRules.key(targetURL.path)
 
-                if usedTargets.contains(targetURL.path) {
+                if try usedTargets.contains(targetKey) || fileEntryExists(targetURL) {
                     sequence += 1
                     continue
                 }
 
-                if FileManager.default.fileExists(atPath: targetURL.path) {
-                    if existingFileComparator(draft.sourceURL, targetURL) {
-                        usedTargets.insert(targetURL.path)
-                        existingIdenticalFiles.append(
-                            ExistingIdenticalFile(
-                                sourceURL: draft.sourceURL,
-                                existingTargetURL: targetURL
-                            )
-                        )
-                        break
-                    }
-
-                    sequence += 1
-                    continue
-                }
-
-                usedTargets.insert(targetURL.path)
+                usedTargets.insert(targetKey)
                 planned.append(
                     PlannedFile(
                         sourceURL: draft.sourceURL,
@@ -120,6 +177,18 @@ public struct TargetPlanner {
             files: planned,
             existingIdenticalFiles: existingIdenticalFiles
         )
+    }
+
+    private static func sequence(of url: URL, for draft: Draft, rules: DestinationNameRules) -> Int? {
+        guard rules.key(url.pathExtension) == rules.key(draft.pathExtension) else { return nil }
+        let base = rules.key(url.deletingPathExtension().lastPathComponent)
+        let expected = rules.key(draft.baseName)
+        if base == expected { return 0 }
+        guard base.hasPrefix(expected + "_") else { return nil }
+        let suffix = base.dropFirst(expected.count + 1)
+        guard !suffix.isEmpty, suffix.allSatisfy({ $0.isASCII && $0.isNumber }),
+              let sequence = Int(suffix), sequence > 0 else { return nil }
+        return sequence
     }
 
     private static func makeDraft(
@@ -200,14 +269,103 @@ public struct TargetPlanner {
     }
 }
 
-public final class FileOrganizer {
-    private typealias SHA256Digest = SHA256.Digest
+struct FileSnapshot: Equatable {
+    let device: dev_t
+    let inode: ino_t
+    let size: off_t
+    let modifiedSeconds: Int
+    let modifiedNanoseconds: Int
+    let changedSeconds: Int
+    let changedNanoseconds: Int
 
-    private struct FileIdentity: Equatable {
-        let device: dev_t
-        let inode: ino_t
+    init(_ info: stat, path: String) throws {
+        guard (info.st_mode & S_IFMT) == S_IFREG else {
+            throw OrganizerError.sourceNotRegularFile(path)
+        }
+        device = info.st_dev
+        inode = info.st_ino
+        size = info.st_size
+        modifiedSeconds = info.st_mtimespec.tv_sec
+        modifiedNanoseconds = info.st_mtimespec.tv_nsec
+        changedSeconds = info.st_ctimespec.tv_sec
+        changedNanoseconds = info.st_ctimespec.tv_nsec
     }
 
+    static func read(at url: URL) throws -> Self {
+        var info = stat()
+        let result = url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return lstat(path, &info)
+        }
+        guard result == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        return try Self(info, path: url.path)
+    }
+
+    static func read(descriptor: Int32, path: String) throws -> Self {
+        var info = stat()
+        guard fstat(descriptor, &info) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        return try Self(info, path: path)
+    }
+
+    func isSameFile(as other: Self) -> Bool {
+        device == other.device && inode == other.inode
+    }
+}
+
+final class OpenedMediaFile {
+    let url: URL
+    let snapshot: FileSnapshot
+    private let handle: FileHandle
+
+    init(_ url: URL) throws {
+        self.url = url
+        _ = try FileSnapshot.read(at: url)
+        let descriptor = url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        }
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        snapshot = try FileSnapshot.read(descriptor: descriptor, path: url.path)
+        try verifyUnchanged()
+    }
+
+    func verifyUnchanged() throws {
+        guard try FileSnapshot.read(descriptor: handle.fileDescriptor, path: url.path) == snapshot,
+              try FileSnapshot.read(at: url) == snapshot else {
+            throw OrganizerError.sourceIdentityChanged(url.path)
+        }
+    }
+
+    func digest() throws -> SHA256.Digest {
+        try verifyUnchanged()
+        try handle.seek(toOffset: 0)
+        var hasher = SHA256()
+        while let data = try autoreleasepool(invoking: { try handle.read(upToCount: 4 * 1_024 * 1_024) }),
+              !data.isEmpty {
+            hasher.update(data: data)
+        }
+        try verifyUnchanged()
+        return hasher.finalize()
+    }
+
+    func removeIfUnchanged() throws {
+        try verifyUnchanged()
+        let result = url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return unlink(path)
+        }
+        guard result == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+}
+
+public final class FileOrganizer {
     private let extractor: MediaMetadataExtractor
     private let fileManager: FileManager
 
@@ -286,12 +444,13 @@ public final class FileOrganizer {
             }
         }
 
-        let planningResult = TargetPlanner.makePlanningResult(
+        let planningResult = try TargetPlanner.makePlanningResult(
             candidates: candidates,
             destinationURL: destinationURL,
             options: options,
+            fileManager: fileManager,
             existingFileComparator: { sourceURL, existingTargetURL in
-                (try? self.filesHaveSameSHA256(sourceURL, existingTargetURL)) == true
+                try self.filesHaveSameSHA256(sourceURL, existingTargetURL)
             }
         )
 
@@ -365,57 +524,70 @@ public final class FileOrganizer {
         let keys: [URLResourceKey] = [.isRegularFileKey, .isHiddenKey]
 
         if recursive {
+            var enumerationError: Error?
             guard let enumerator = fileManager.enumerator(
                 at: sourceURL,
                 includingPropertiesForKeys: keys,
-                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+                options: [.skipsHiddenFiles, .skipsPackageDescendants],
+                errorHandler: { url, error in
+                    enumerationError = OrganizerError.sourceEnumerationFailed(url.path, error.localizedDescription)
+                    return false
+                }
             ) else {
-                return []
+                throw OrganizerError.sourceEnumerationFailed(sourceURL.path, "Could not start directory enumeration.")
             }
 
-            return enumerator.compactMap { item in
-                guard let url = item as? URL,
-                      let values = try? url.resourceValues(forKeys: Set(keys)),
-                      values.isRegularFile == true,
-                      values.isHidden != true else {
-                    return nil
+            var discovered: [URL] = []
+            for case let url as URL in enumerator {
+                do {
+                    let values = try url.resourceValues(forKeys: Set(keys))
+                    if values.isRegularFile == true, values.isHidden != true {
+                        discovered.append(url)
+                    }
+                } catch {
+                    throw OrganizerError.sourceEnumerationFailed(url.path, error.localizedDescription)
                 }
-                return url
             }
-            .sorted { $0.path < $1.path }
+            if let enumerationError { throw enumerationError }
+            return discovered.sorted { $0.path < $1.path }
         }
 
         return try fileManager
             .contentsOfDirectory(at: sourceURL, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])
             .filter {
-                let values = try? $0.resourceValues(forKeys: Set(keys))
-                return values?.isRegularFile == true && values?.isHidden != true
+                let values = try $0.resourceValues(forKeys: Set(keys))
+                return values.isRegularFile == true && values.isHidden != true
             }
             .sorted { $0.path < $1.path }
     }
 
     private func ensureDestinationCanBeCreated(_ destinationURL: URL) throws {
-        if fileManager.fileExists(atPath: destinationURL.path) {
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: destinationURL.path, isDirectory: &isDirectory) {
+            guard isDirectory.boolValue else {
+                throw OrganizerError.destinationParentMissing(destinationURL.path)
+            }
             return
         }
 
         let parent = destinationURL.deletingLastPathComponent()
-        guard fileManager.fileExists(atPath: parent.path) else {
+        guard fileManager.fileExists(atPath: parent.path, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw OrganizerError.destinationParentMissing(parent.path)
         }
     }
 
     private func perform(_ plannedFile: PlannedFile, destinationRootURL: URL?) -> FileExecutionResult {
         do {
-            let sourceIdentity = try fileIdentity(of: plannedFile.sourceURL)
+            let source = try OpenedMediaFile(plannedFile.sourceURL)
             let usedClone = try copySafely(
-                from: plannedFile.sourceURL,
+                from: source,
                 to: plannedFile.targetURL,
-                destinationRootURL: destinationRootURL
+                destinationRootURL: destinationRootURL,
+                verifyContents: plannedFile.operationMode == .move
             )
             if plannedFile.operationMode == .move {
                 do {
-                    try deleteSourceIfIdentityUnchanged(plannedFile.sourceURL, expected: sourceIdentity)
+                    try source.removeIfUnchanged()
                 } catch {
                     return FileExecutionResult(
                         plannedFile: plannedFile,
@@ -430,11 +602,17 @@ public final class FileOrganizer {
         }
     }
 
-    private func copySafely(from sourceURL: URL, to targetURL: URL, destinationRootURL: URL?) throws -> Bool {
+    private func copySafely(
+        from source: OpenedMediaFile,
+        to targetURL: URL,
+        destinationRootURL: URL?,
+        verifyContents: Bool
+    ) throws -> Bool {
+        let sourceURL = source.url
         let targetDirectory = targetURL.deletingLastPathComponent()
         try prepareDestinationDirectory(targetDirectory, destinationRootURL: destinationRootURL)
 
-        guard !pathExistsUsingLstat(targetURL) else {
+        guard try !fileEntryExists(targetURL) else {
             throw OrganizerError.targetAlreadyExists(targetURL.path)
         }
 
@@ -445,7 +623,7 @@ public final class FileOrganizer {
 
         var usedClone = false
         do {
-            guard !pathExistsUsingLstat(temporaryURL) else {
+            guard try !fileEntryExists(temporaryURL) else {
                 throw OrganizerError.targetAlreadyExists(temporaryURL.path)
             }
 
@@ -455,20 +633,45 @@ public final class FileOrganizer {
                 try fileManager.copyItem(at: sourceURL, to: temporaryURL)
             }
 
-            try ensureRegularFileWithoutSymlink(temporaryURL)
-            try verifyFileSize(sourceURL: sourceURL, copiedURL: temporaryURL)
-            guard !pathExistsUsingLstat(targetURL) else {
-                throw OrganizerError.targetAlreadyExists(targetURL.path)
+            try Self.verifyCopy(source: source, copiedURL: temporaryURL, verifyContents: verifyContents)
+            let temporarySnapshot = try FileSnapshot.read(at: temporaryURL)
+            try Self.promoteWithoutReplacing(temporaryURL, to: targetURL)
+            let targetSnapshot = try FileSnapshot.read(at: targetURL)
+            guard targetSnapshot.isSameFile(as: temporarySnapshot),
+                  targetSnapshot.size == temporarySnapshot.size else {
+                throw OrganizerError.copyVerificationFailed(targetURL.path)
             }
-            try fileManager.moveItem(at: temporaryURL, to: targetURL)
-            try ensureRegularFileWithoutSymlink(targetURL)
-            try verifyFileSize(sourceURL: sourceURL, copiedURL: targetURL)
             return usedClone
         } catch {
             if fileManager.fileExists(atPath: temporaryURL.path) {
                 try? fileManager.removeItem(at: temporaryURL)
             }
             throw error
+        }
+    }
+
+    static func verifyCopy(source: OpenedMediaFile, copiedURL: URL, verifyContents: Bool) throws {
+        let copy = try OpenedMediaFile(copiedURL)
+        guard source.snapshot.size == copy.snapshot.size else {
+            throw OrganizerError.copyVerificationFailed(copiedURL.path)
+        }
+        if verifyContents, try source.digest() != copy.digest() {
+            throw OrganizerError.copyVerificationFailed(copiedURL.path)
+        }
+        try source.verifyUnchanged()
+        try copy.verifyUnchanged()
+    }
+
+    static func promoteWithoutReplacing(_ temporaryURL: URL, to targetURL: URL) throws {
+        let result = temporaryURL.withUnsafeFileSystemRepresentation { sourcePath in
+            targetURL.withUnsafeFileSystemRepresentation { targetPath in
+                guard let sourcePath, let targetPath else { return Int32(-1) }
+                return renameatx_np(AT_FDCWD, sourcePath, AT_FDCWD, targetPath, UInt32(RENAME_EXCL))
+            }
+        }
+        guard result == 0 else {
+            if errno == EEXIST { throw OrganizerError.targetAlreadyExists(targetURL.path) }
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
     }
 
@@ -524,7 +727,7 @@ public final class FileOrganizer {
         do {
             try fileManager.createDirectory(at: url, withIntermediateDirectories: false)
         } catch {
-            if pathExistsUsingLstat(url) {
+            if try fileEntryExists(url) {
                 try ensureDirectoryWithoutSymlink(url)
                 return
             }
@@ -540,73 +743,11 @@ public final class FileOrganizer {
             return lstat(path, &statBuffer)
         }
 
-        guard result == 0,
-              (statBuffer.st_mode & S_IFMT) == S_IFDIR else {
-            throw OrganizerError.destinationParentMissing(url.path)
-        }
-
-        if (statBuffer.st_mode & S_IFMT) == S_IFLNK {
+        if result == 0, (statBuffer.st_mode & S_IFMT) == S_IFLNK {
             throw OrganizerError.destinationContainsSymbolicLink(url.path)
         }
-    }
-
-    private func ensureRegularFileWithoutSymlink(_ url: URL) throws {
-        var statBuffer = stat()
-        let result = url.withUnsafeFileSystemRepresentation { path in
-            guard let path else { return Int32(-1) }
-            return lstat(path, &statBuffer)
-        }
-
-        guard result == 0,
-              (statBuffer.st_mode & S_IFMT) == S_IFREG else {
-            throw OrganizerError.sourceNotRegularFile(url.path)
-        }
-    }
-
-    private func pathExistsUsingLstat(_ url: URL) -> Bool {
-        var statBuffer = stat()
-        return url.withUnsafeFileSystemRepresentation { path in
-            guard let path else { return false }
-            return lstat(path, &statBuffer) == 0
-        }
-    }
-
-    private func fileIdentity(of url: URL) throws -> FileIdentity {
-        var statBuffer = stat()
-        let result = url.withUnsafeFileSystemRepresentation { path in
-            guard let path else { return Int32(-1) }
-            return lstat(path, &statBuffer)
-        }
-
-        guard result == 0,
-              (statBuffer.st_mode & S_IFMT) == S_IFREG else {
-            throw OrganizerError.sourceNotRegularFile(url.path)
-        }
-
-        return FileIdentity(device: statBuffer.st_dev, inode: statBuffer.st_ino)
-    }
-
-    private func deleteSourceIfIdentityUnchanged(_ sourceURL: URL, expected: FileIdentity) throws {
-        guard try fileIdentity(of: sourceURL) == expected else {
-            throw OrganizerError.sourceIdentityChanged(sourceURL.path)
-        }
-
-        let result = sourceURL.withUnsafeFileSystemRepresentation { path in
-            guard let path else { return Int32(-1) }
-            return unlink(path)
-        }
-
-        guard result == 0 else {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        }
-    }
-
-    private func verifyFileSize(sourceURL: URL, copiedURL: URL) throws {
-        let sourceSize = try sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize
-        let copiedSize = try copiedURL.resourceValues(forKeys: [.fileSizeKey]).fileSize
-
-        guard sourceSize == copiedSize else {
-            throw OrganizerError.copyVerificationFailed(copiedURL.path)
+        guard result == 0, (statBuffer.st_mode & S_IFMT) == S_IFDIR else {
+            throw OrganizerError.destinationParentMissing(url.path)
         }
     }
 
@@ -633,32 +774,13 @@ public final class FileOrganizer {
     }
 
     private func filesHaveSameSHA256(_ sourceURL: URL, _ targetURL: URL) throws -> Bool {
-        _ = try fileIdentity(of: sourceURL)
-        try ensureRegularFileWithoutSymlink(targetURL)
-        let sourceSize = try sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize
-        let targetSize = try targetURL.resourceValues(forKeys: [.fileSizeKey]).fileSize
-
-        guard sourceSize == targetSize else {
+        let source = try OpenedMediaFile(sourceURL)
+        let target = try OpenedMediaFile(targetURL)
+        guard source.snapshot.size == target.snapshot.size else {
             return false
         }
-
-        return try sha256Digest(of: sourceURL) == sha256Digest(of: targetURL)
-    }
-
-    private func sha256Digest(of url: URL) throws -> SHA256Digest {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-
-        var hasher = SHA256()
-        while autoreleasepool(invoking: {
-            let data = handle.readData(ofLength: 4 * 1_024 * 1_024)
-            guard !data.isEmpty else {
-                return false
-            }
-            hasher.update(data: data)
-            return true
-        }) {}
-
-        return hasher.finalize()
+        let equal = try source.digest() == target.digest()
+        try source.verifyUnchanged()
+        return equal
     }
 }

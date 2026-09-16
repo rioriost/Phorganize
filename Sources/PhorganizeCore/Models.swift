@@ -45,7 +45,7 @@ public struct OrganizationOptions: Codable, Equatable {
         renameByDate: Bool = true,
         extensionCase: ExtensionCase = .preserve,
         operationMode: OperationMode = .copy,
-        timezoneOffsetHours: Int = TimeZone.current.secondsFromGMT() / 3_600,
+        timezoneOffsetHours: Int? = nil,
         timezoneIdentifier: String? = nil,
         metadataConcurrency: Int = max(2, min(ProcessInfo.processInfo.activeProcessorCount * 2, 16)),
         copyConcurrency: Int = max(1, min(ProcessInfo.processInfo.activeProcessorCount, 6))
@@ -56,8 +56,10 @@ public struct OrganizationOptions: Codable, Equatable {
         self.renameByDate = renameByDate
         self.extensionCase = extensionCase
         self.operationMode = operationMode
-        self.timezoneOffsetHours = timezoneOffsetHours
-        self.timezoneIdentifier = timezoneIdentifier ?? TimeZone.current.identifier
+        self.timezoneOffsetHours = timezoneOffsetHours ?? TimeZone.current.secondsFromGMT() / 3_600
+        self.timezoneIdentifier = timezoneIdentifier
+            ?? timezoneOffsetHours.flatMap { Self.fixedTimeZone(hours: $0)?.identifier }
+            ?? TimeZone.current.identifier
         self.metadataConcurrency = metadataConcurrency
         self.copyConcurrency = copyConcurrency
     }
@@ -87,7 +89,7 @@ public struct OrganizationOptions: Codable, Equatable {
         operationMode = try container.decodeIfPresent(OperationMode.self, forKey: .operationMode) ?? defaults.operationMode
         timezoneOffsetHours = try container.decodeIfPresent(Int.self, forKey: .timezoneOffsetHours) ?? defaults.timezoneOffsetHours
         timezoneIdentifier = try container.decodeIfPresent(String.self, forKey: .timezoneIdentifier)
-            ?? TimeZone(secondsFromGMT: timezoneOffsetHours * 3_600)?.identifier
+            ?? Self.fixedTimeZone(hours: timezoneOffsetHours)?.identifier
             ?? defaults.timezoneIdentifier
         metadataConcurrency = try container.decodeIfPresent(Int.self, forKey: .metadataConcurrency) ?? defaults.metadataConcurrency
         copyConcurrency = try container.decodeIfPresent(Int.self, forKey: .copyConcurrency) ?? defaults.copyConcurrency
@@ -99,8 +101,13 @@ public struct OrganizationOptions: Codable, Equatable {
 
     public var timeZone: TimeZone {
         TimeZone(identifier: timezoneIdentifier)
-            ?? TimeZone(secondsFromGMT: timezoneOffsetHours * 3_600)
+            ?? Self.fixedTimeZone(hours: timezoneOffsetHours)
             ?? .current
+    }
+
+    private static func fixedTimeZone(hours: Int) -> TimeZone? {
+        guard (-18...18).contains(hours) else { return nil }
+        return TimeZone(secondsFromGMT: hours * 3_600)
     }
 }
 
@@ -301,6 +308,8 @@ public enum OrganizerError: Error, LocalizedError {
     case destinationContainsSymbolicLink(String)
     case sourceNotRegularFile(String)
     case sourceIdentityChanged(String)
+    case sourceEnumerationFailed(String, String)
+    case destinationVolumeUnknown(String)
 
     public var errorDescription: String? {
         switch self {
@@ -320,6 +329,10 @@ public enum OrganizerError: Error, LocalizedError {
             return "Source is not a regular file: \(path)"
         case .sourceIdentityChanged(let path):
             return "Source changed before deletion: \(path)"
+        case .sourceEnumerationFailed(let path, let reason):
+            return "Could not completely read source \(path): \(reason)"
+        case .destinationVolumeUnknown(let path):
+            return "Could not determine destination filename rules: \(path)"
         }
     }
 }
