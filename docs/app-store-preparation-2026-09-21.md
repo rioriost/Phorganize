@@ -2,12 +2,13 @@
 
 - App / platform: Phorganize Photo Organizer / macOS
 - Version / build: **1.1.2 / 6**, update
+- Submission: **submitted — 審査待ち (Waiting for Review)**, 2026-09-21 12:23 JST.
 - App Store Connect ID: `6780316718`; production bundle ID: `st.rio.phorganize`
 - Guidelines checked: 2026-09-21; Apple displayed Last Updated June 8, 2026
 - Readiness: **READY WITH MANUAL CONFIRMATIONS** — upload, Apple processing, export-compliance answers and selection of build 6 are complete; runtime and legal limitations below remain.
 - Findings: **BLOCKER 0 / WARNING 2 / MANUAL 1**. Passing and inapplicable categories are identified in the coverage table; these counts describe actionable findings, not a compliance score.
-- Current live observation: **1.1.1 (5), 配信準備完了**. New version: **1.1.2, 審査準備完了**.
-- **Add for Review completed** at 12:20 JST. The submission draft contains exactly **macOS 1.1.2 (6)** and offers **審査へ提出**. Final submission and public release have not occurred.
+- Current live observation: previous release **1.1.1 (5), 配信準備完了**; submitted version **1.1.2 (6), 審査待ち**.
+- **Add for Review completed** at 12:20 JST; **Submit for Review completed** at 12:23 JST after explicit final user approval. Apple confirmed one submitted item. Approval and public release have not occurred.
 
 ## Actionable findings
 
@@ -101,4 +102,14 @@ The export options use `app-store-connect`, destination `upload`, automatic sign
 
 The exact selected build is the audited archive above, with unchanged app source. App Store Connect accepted Add for Review without a required-field error. English/Japanese release text and screenshot sets remain saved; automatic release after approval remains selected. Business agreements were rechecked after restart and remain active; DSA verification remains in review.
 
-Readiness is **READY WITH MANUAL CONFIRMATIONS**: zero blockers, the two warnings and one manual item documented above. The preflight skill requires confirmation immediately before the final submit action. No final **Submit for Review** action has been performed yet.
+Preflight readiness was **READY WITH MANUAL CONFIRMATIONS**: zero blockers, the two warnings and one manual item documented above. These limitations and automatic release after approval were presented to the user, who explicitly replied **承認します。** immediately before submission. This acceptance does not convert unperformed runtime checks into verified passes.
+
+## Submission result
+
+- Apple confirmed **1項目が提出されました** after the final **審査へ提出** action.
+- Submission date displayed: **2026年9月21日 12:23** (JST).
+- Submission ID: `01661697-1162-4bd8-866e-a22bbbe97db6`.
+- Submitted item: **macOSアプリ1.1.2**, build **1.1.2 (6)**, Apple build ID `6f87b722-7166-4a9c-b17f-3b31d9cb761b`.
+- Submission detail and item status both displayed **審査待ち (Waiting for Review)**.
+- [App Store Connect submission](https://appstoreconnect.apple.com/apps/6780316718/distribution/reviewsubmissions/details/01661697-1162-4bd8-866e-a22bbbe97db6).
+- Release remains automatic after approval. Submission acceptance is not approval or publication; the documented runtime and EU availability limitations remain.
