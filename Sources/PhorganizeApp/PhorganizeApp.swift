@@ -10,15 +10,35 @@ struct PhorganizeMacApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .frame(minWidth: 900, idealWidth: 980, minHeight: 860, idealHeight: 940)
+                .frame(minWidth: 620, idealWidth: 760, minHeight: 560, idealHeight: 820)
         }
-        .defaultSize(width: 980, height: 940)
+        .defaultSize(width: 760, height: 820)
         .windowStyle(.titleBar)
         .commands {
+            OrganizationCommands()
             CommandGroup(replacing: .help) {
                 Link(L10n.string("help.privacyPolicy"), destination: URL(string: "https://github.com/rioriost/Phorganize/blob/main/PRIVACY.md")!)
                 Link(L10n.string("help.support"), destination: URL(string: "https://github.com/rioriost/Phorganize/issues")!)
             }
+        }
+    }
+}
+
+struct OrganizationCommands: Commands {
+    @FocusedObject private var model: AppModel?
+
+    var body: some Commands {
+        CommandGroup(after: .newItem) {
+            Button(L10n.string("source.choose")) { model?.chooseSource() }
+                .keyboardShortcut("o", modifiers: .command)
+                .disabled(model == nil || model?.isProcessing == true)
+            Button(L10n.string("destination.choose")) { model?.chooseDestination() }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+                .disabled(model == nil || model?.isProcessing == true)
+            Divider()
+            Button(model?.actionTitle ?? L10n.string("action.copyFiles")) { model?.requestRun() }
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(model?.canRun != true)
         }
     }
 }
@@ -94,6 +114,7 @@ final class AppModel: ObservableObject {
         }
     }
 
+    @Published var showsMoveConfirmation = false
     @Published var isProcessing = false
     @Published var hasPendingChange = true
     @Published var phase = L10n.string("phase.ready")
@@ -176,6 +197,7 @@ final class AppModel: ObservableObject {
     }
 
     func acceptSource(_ url: URL) {
+        guard !isProcessing else { return }
         do {
             let selectedURL = try saveLocation(url: url, bookmarkKey: Keys.sourceBookmark, pathKey: Keys.sourcePath)
             sourceURL = selectedURL
@@ -189,6 +211,7 @@ final class AppModel: ObservableObject {
     }
 
     func acceptDestination(_ url: URL) {
+        guard !isProcessing else { return }
         do {
             let selectedURL = try saveLocation(url: url, bookmarkKey: Keys.destinationBookmark, pathKey: Keys.destinationPath)
             destinationURL = selectedURL
@@ -208,6 +231,21 @@ final class AppModel: ObservableObject {
             throw LocationError(message: L10n.string("location.selectionRequired"))
         }
         return RunContext(sourceURL: sourceURL, destinationURL: destinationURL, options: options)
+    }
+
+    func requestRun() {
+        guard canRun else { return }
+        if options.operationMode == .move {
+            showsMoveConfirmation = true
+        } else {
+            run()
+        }
+    }
+
+    func confirmMove() {
+        showsMoveConfirmation = false
+        guard canRun, options.operationMode == .move else { return }
+        run()
     }
 
     func run() {
@@ -252,7 +290,7 @@ final class AppModel: ObservableObject {
                 }
 
                 await MainActor.run {
-                    self.phase = L10n.string("phase.copyingFiles")
+                    self.phase = L10n.string(selectedOptions.operationMode == .move ? "phase.movingFiles" : "phase.copyingFiles")
                     self.progressValue = 0
                     self.progressText = L10n.format("progress.files", 0, plan.files.count)
                 }
@@ -422,7 +460,11 @@ final class AppModel: ObservableObject {
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
 
-        if panel.runModal() == .OK, let url = panel.url {
+        if let window = NSApp.keyWindow {
+            panel.beginSheetModal(for: window) { response in
+                if response == .OK, let url = panel.url { completion(url) }
+            }
+        } else if panel.runModal() == .OK, let url = panel.url {
             completion(url)
         }
     }
@@ -503,35 +545,68 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    FolderDropBox(
-                        title: L10n.string("source.title"),
-                        subtitle: L10n.string("source.subtitle"),
-                        path: model.sourcePath,
-                        detailText: model.sourceSelectionError ?? model.sourceSummaryText,
-                        detailIsWarning: model.sourceSelectionError != nil,
-                        buttonTitle: L10n.string("source.choose"),
-                        onChoose: model.chooseSource,
-                        onDropURL: model.acceptSource
-                    )
-
+                VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L10n.string("organize.title")).font(.title2.bold())
+                        Text(L10n.string("organize.subtitle"))
+                            .foregroundStyle(.secondary)
+                    }
+                    VStack(spacing: 12) {
+                        FolderDropBox(
+                            title: L10n.string("source.title"),
+                            subtitle: L10n.string("source.subtitle"),
+                            symbol: "folder",
+                            path: model.sourcePath,
+                            detailText: model.sourceSelectionError ?? model.sourceSummaryText,
+                            detailIsWarning: model.sourceSelectionError != nil,
+                            buttonTitle: L10n.string("source.choose"),
+                            onChoose: model.chooseSource,
+                            onDropURL: model.acceptSource
+                        )
+                        FolderDropBox(
+                            title: L10n.string("destination.title"),
+                            subtitle: L10n.string("destination.subtitle"),
+                            symbol: "folder.badge.plus",
+                            path: model.destinationPath,
+                            detailText: model.destinationSelectionError ?? model.destinationWarningText,
+                            detailIsWarning: model.destinationSelectionError != nil || !model.destinationWarningText.isEmpty,
+                            buttonTitle: L10n.string("destination.choose"),
+                            onChoose: model.chooseDestination,
+                            onDropURL: model.acceptDestination
+                        )
+                    }
+                    .disabled(model.isProcessing)
                     RulesView(options: $model.options)
-
-                    FolderDropBox(
-                        title: L10n.string("destination.title"),
-                        subtitle: L10n.string("destination.subtitle"),
-                        path: model.destinationPath,
-                        detailText: model.destinationSelectionError ?? model.destinationWarningText,
-                        detailIsWarning: model.destinationSelectionError != nil || !model.destinationWarningText.isEmpty,
-                        buttonTitle: L10n.string("destination.choose"),
-                        onChoose: model.chooseDestination,
-                        onDropURL: model.acceptDestination
-                    )
-
-                    ActionView(model: model)
+                        .disabled(model.isProcessing)
+                    if !model.resultLines.isEmpty {
+                        GroupBox(L10n.string("result.title")) {
+                            LazyVStack(alignment: .leading, spacing: 5) {
+                                ForEach(Array(model.resultLines.enumerated()), id: \.offset) { _, line in
+                                    Text(line)
+                                        .font(.callout)
+                                        .textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            }
+                            .padding(8)
+                        }
+                    }
                 }
-                .padding()
+                .padding(20)
+                .frame(maxWidth: 960)
+                .frame(maxWidth: .infinity)
             }
+            Divider()
+            ActionView(model: model)
+                .padding(16)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .focusedSceneObject(model)
+        .alert(L10n.string("move.confirmTitle"), isPresented: $model.showsMoveConfirmation) {
+            Button(L10n.string("action.cancel"), role: .cancel) {}
+            Button(L10n.string("action.moveFiles"), role: .destructive) { model.confirmMove() }
+        } message: {
+            Text(L10n.format("move.confirmMessage", model.sourcePath, model.destinationPath))
         }
     }
 }
@@ -539,6 +614,7 @@ struct ContentView: View {
 struct FolderDropBox: View {
     let title: String
     let subtitle: String
+    let symbol: String
     let path: String
     let detailText: String
     let detailIsWarning: Bool
@@ -546,151 +622,158 @@ struct FolderDropBox: View {
     let onChoose: () -> Void
     let onDropURL: (URL) -> Void
 
+    @Environment(\.isEnabled) private var isEnabled
     @State private var isTargeted = false
+    @State private var dropError: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.headline)
-
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(isTargeted ? Color.accentColor : Color.secondary.opacity(0.35), style: StrokeStyle(lineWidth: 2, dash: [7]))
-                .background(
-                    RoundedRectangle(cornerRadius: 14)
-                        .fill(isTargeted ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.05))
-                )
-                .overlay {
-                    VStack(spacing: 10) {
-                        Text(path.isEmpty ? subtitle : path)
-                            .font(path.isEmpty ? .body : .system(.body, design: .monospaced))
-                            .multilineTextAlignment(.center)
-                            .lineLimit(3)
-                            .foregroundStyle(path.isEmpty ? .secondary : .primary)
-
-                        if !detailText.isEmpty {
-                            Text(detailText)
-                                .font(.callout)
-                                .multilineTextAlignment(.center)
-                                .foregroundStyle(detailIsWarning ? .orange : .secondary)
-                        }
-
-                        Button(buttonTitle, action: onChoose)
-                    }
-                    .padding()
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: symbol)
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                Text(title).font(.headline)
+                Spacer()
+                Button(buttonTitle) {
+                    dropError = nil
+                    onChoose()
                 }
-                .frame(height: detailText.isEmpty ? 140 : 170)
-                .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isTargeted) { providers in
-                    loadDroppedURL(from: providers)
-                }
+                .help(subtitle)
+            }
+            Text(path.isEmpty ? subtitle : path)
+                .foregroundStyle(path.isEmpty ? .secondary : .primary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .accessibilityLabel(title)
+                .accessibilityValue(path.isEmpty ? subtitle : path)
+            if let warning = dropError ?? (detailIsWarning ? detailText : nil), !warning.isEmpty {
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if !detailText.isEmpty {
+                Text(detailText)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(isTargeted ? Color.accentColor : Color(nsColor: .separatorColor),
+                              style: StrokeStyle(lineWidth: isTargeted ? 2 : 1, dash: path.isEmpty ? [5, 4] : []))
+        }
+        .onChange(of: path) { _ in dropError = nil }
+        .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isTargeted) { providers in
+            guard isEnabled else { return false }
+            return loadDroppedURL(from: providers)
         }
     }
 
     private func loadDroppedURL(from providers: [NSItemProvider]) -> Bool {
-        guard let provider = providers.first else {
+        guard providers.count == 1, let provider = providers.first else {
+            dropError = L10n.string("location.dropFolderOnly")
             return false
         }
-
         provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
             let url: URL?
             if let data = item as? Data {
                 url = URL(dataRepresentation: data, relativeTo: nil)
             } else if let string = item as? String {
                 url = URL(string: string)
-            } else if let droppedURL = item as? URL {
-                url = droppedURL
             } else {
-                url = nil
+                url = item as? URL
             }
-
-            if let url {
-                DispatchQueue.main.async {
-                    onDropURL(url)
+            DispatchQueue.main.async {
+                guard isEnabled else { return }
+                guard let url, url.isFileURL else {
+                    dropError = L10n.string("location.dropFolderOnly")
+                    return
                 }
+                let access = url.startAccessingSecurityScopedResource()
+                defer { if access { url.stopAccessingSecurityScopedResource() } }
+                guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+                    dropError = L10n.string("location.dropFolderOnly")
+                    return
+                }
+                dropError = nil
+                onDropURL(url)
             }
         }
-
         return true
     }
 }
 
 struct RulesView: View {
     @Binding var options: OrganizationOptions
+    @State private var showsAdvanced = false
 
     private var timeZoneIdentifiers: [String] {
         let identifiers = TimeZone.knownTimeZoneIdentifiers.sorted()
-        if identifiers.contains(options.timezoneIdentifier) {
-            return identifiers
-        }
+        if identifiers.contains(options.timezoneIdentifier) { return identifiers }
         return ([options.timezoneIdentifier] + identifiers).filter { !$0.isEmpty }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(L10n.string("rules.title"))
-                .font(.headline)
-
-            VStack(alignment: .leading, spacing: 12) {
+        GroupBox(L10n.string("rules.title")) {
+            VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     Text(L10n.string("rules.mode"))
-
-                    Picker("", selection: $options.operationMode) {
+                    Spacer()
+                    Picker(L10n.string("rules.mode"), selection: $options.operationMode) {
                         Text(L10n.string("mode.copy")).tag(OperationMode.copy)
                         Text(L10n.string("mode.move")).tag(OperationMode.move)
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)
-                    .frame(width: 180)
-                    Spacer()
+                    .frame(width: 200)
                 }
-
-                HStack(spacing: 20) {
-                    Toggle(L10n.string("rules.recursive"), isOn: $options.recursive)
-                    Toggle(L10n.string("rules.cameraFolder"), isOn: $options.includeCameraFolder)
-                    Toggle(L10n.string("rules.lensFolder"), isOn: $options.includeLensFolder)
-
-                    Picker(L10n.string("rules.extensionCase"), selection: $options.extensionCase) {
-                        Text(L10n.string("extension.preserve")).tag(ExtensionCase.preserve)
-                        Text(L10n.string("extension.lower")).tag(ExtensionCase.lower)
-                        Text(L10n.string("extension.upper")).tag(ExtensionCase.upper)
+                Text(L10n.string(options.operationMode == .copy ? "mode.copyHelp" : "mode.moveHelp"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Divider()
+                Toggle(L10n.string("rules.recursive"), isOn: $options.recursive)
+                Toggle(L10n.string("rules.cameraFolder"), isOn: $options.includeCameraFolder)
+                Toggle(L10n.string("rules.lensFolder"), isOn: $options.includeLensFolder)
+                Toggle(L10n.string("rules.renameByDate"), isOn: $options.renameByDate)
+                Divider()
+                Picker(L10n.string("rules.extensionCase"), selection: $options.extensionCase) {
+                    Text(L10n.string("extension.preserve")).tag(ExtensionCase.preserve)
+                    Text(L10n.string("extension.lower")).tag(ExtensionCase.lower)
+                    Text(L10n.string("extension.upper")).tag(ExtensionCase.upper)
+                }
+                .pickerStyle(.menu)
+                Picker(L10n.string("rules.timezone"), selection: $options.timezoneIdentifier) {
+                    ForEach(timeZoneIdentifiers, id: \.self) { identifier in
+                        Text(timeZoneLabel(identifier)).tag(identifier)
                     }
-                    .pickerStyle(.menu)
-                    .fixedSize()
                 }
-
-                HStack(spacing: 20) {
-                    Toggle(L10n.string("rules.renameByDate"), isOn: $options.renameByDate)
-
-                    Picker(L10n.string("rules.timezone"), selection: $options.timezoneIdentifier) {
-                        ForEach(timeZoneIdentifiers, id: \.self) { identifier in
-                            Text(timeZoneLabel(identifier)).tag(identifier)
-                        }
+                .pickerStyle(.menu)
+                Divider()
+                DisclosureGroup(L10n.string("rules.advanced"), isExpanded: $showsAdvanced) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Stepper(L10n.format("rules.metadataParallelism", options.metadataConcurrency), value: $options.metadataConcurrency, in: 1...64)
+                        Stepper(L10n.format("rules.copyParallelism", options.copyConcurrency), value: $options.copyConcurrency, in: 1...16)
                     }
-                    .pickerStyle(.menu)
-                    .frame(width: 320)
-                }
-
-                HStack(spacing: 20) {
-                    Stepper(L10n.format("rules.metadataParallelism", options.metadataConcurrency), value: $options.metadataConcurrency, in: 1...64)
-                    Stepper(L10n.format("rules.copyParallelism", options.copyConcurrency), value: $options.copyConcurrency, in: 1...16)
-                    Spacer()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 10)
                 }
             }
-            .padding()
-            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private func timeZoneLabel(_ identifier: String) -> String {
-        guard let timeZone = TimeZone(identifier: identifier) else {
-            return identifier
-        }
-
+        guard let timeZone = TimeZone(identifier: identifier) else { return identifier }
         let seconds = timeZone.secondsFromGMT()
         let sign = seconds >= 0 ? "+" : "-"
         let absolute = abs(seconds)
-        let hours = absolute / 3_600
-        let minutes = (absolute % 3_600) / 60
-        return "\(identifier) (GMT\(sign)\(String(format: "%02d:%02d", hours, minutes)))"
+        return "\(identifier) (GMT\(sign)\(String(format: "%02d:%02d", absolute / 3_600, (absolute % 3_600) / 60)))"
     }
 }
 
@@ -698,35 +781,28 @@ struct ActionView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(model.phase)
-                    .foregroundStyle(.secondary)
-
-                Spacer()
-
-                Button(model.actionTitle) {
-                    model.run()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!model.canRun)
-            }
-
-            ProgressView(value: model.progressValue)
-            Text(model.progressText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if !model.resultLines.isEmpty {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(Array(model.resultLines.enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .font(.system(.caption, design: .monospaced))
+                    Text(model.phase).font(.headline)
+                    if !model.isProcessing && (model.sourcePath.isEmpty || model.destinationPath.isEmpty) {
+                        Text(L10n.string("location.selectionRequired"))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !model.progressText.isEmpty {
+                        Text(model.progressText).font(.callout).foregroundStyle(.secondary)
                     }
                 }
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+                Spacer(minLength: 0)
+                Button(model.actionTitle) { model.requestRun() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!model.canRun)
+            }
+            if model.isProcessing {
+                ProgressView(value: model.progressValue)
+                    .accessibilityLabel(model.phase)
+                    .accessibilityValue(model.progressText)
             }
         }
     }

@@ -5,6 +5,65 @@ import XCTest
 
 final class AppModelTests: XCTestCase {
     @MainActor
+    func testMoveRequestRequiresConfirmationAndDoesNotTouchFiles() async throws {
+        let folders = try Folders()
+        defer { folders.remove() }
+        let original = folders.source.appendingPathComponent("original.jpg")
+        let data = Data("original content".utf8)
+        try data.write(to: original)
+        let model = AppModel(defaults: MemoryDefaults(), bookmarks: plainBookmarks())
+        model.acceptSource(folders.source)
+        model.acceptDestination(folders.destination)
+        model.options.operationMode = .move
+
+        model.requestRun()
+
+        XCTAssertTrue(model.showsMoveConfirmation)
+        XCTAssertFalse(model.isProcessing)
+        XCTAssertEqual(try Data(contentsOf: original), data)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: folders.destination.path).isEmpty)
+        model.showsMoveConfirmation = false // Cancel dismisses the alert without running.
+        XCTAssertFalse(model.isProcessing)
+    }
+
+    @MainActor
+    func testInvalidMoveRequestAndStaleConfirmationCannotStartProcessing() async throws {
+        let model = AppModel(defaults: MemoryDefaults(), bookmarks: plainBookmarks())
+        model.options.operationMode = .move
+        model.requestRun()
+        XCTAssertFalse(model.showsMoveConfirmation)
+        model.confirmMove()
+        XCTAssertFalse(model.isProcessing)
+
+        let folders = try Folders()
+        defer { folders.remove() }
+        model.acceptSource(folders.source)
+        model.acceptDestination(folders.destination)
+        model.requestRun()
+        XCTAssertTrue(model.showsMoveConfirmation)
+        model.options.operationMode = .copy
+        model.confirmMove()
+        XCTAssertFalse(model.showsMoveConfirmation)
+        XCTAssertFalse(model.isProcessing)
+    }
+
+    @MainActor
+    func testFolderSelectionsCannotChangeDuringProcessing() async throws {
+        let folders = try Folders()
+        defer { folders.remove() }
+        let model = AppModel(defaults: MemoryDefaults(), bookmarks: plainBookmarks())
+        model.acceptSource(folders.source)
+        model.acceptDestination(folders.destination)
+        model.isProcessing = true
+        model.acceptSource(folders.otherSource)
+        model.acceptDestination(folders.otherDestination)
+        XCTAssertEqual(model.sourcePath, folders.source.path)
+        XCTAssertEqual(model.destinationPath, folders.destination.path)
+        model.requestRun()
+        XCTAssertFalse(model.showsMoveConfirmation)
+    }
+
+    @MainActor
     func testTwoModelsKeepTheirOwnFoldersAndOptionsWithSharedDefaults() async throws {
         let folders = try Folders()
         defer { folders.remove() }

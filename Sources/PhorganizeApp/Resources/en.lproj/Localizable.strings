@@ -27,8 +27,8 @@
 "result.existingIdenticalFiles" = "Files skipped because an identical target already exists:";
 
 "source.title" = "Source folder";
-"source.subtitle" = "Drag a media folder here, or choose one. A missing saved path is allowed until you run.";
-"source.choose" = "Choose Source";
+"source.subtitle" = "Drag a media folder here, or choose one.";
+"source.choose" = "Choose Source…";
 "source.summary" = "Target files: %d (%@) / Unsupported: %d / Total: %d";
 "source.summaryEmpty" = "No target files. Total: %d / Unsupported: %d";
 "source.summaryMissing" = "The saved source path does not exist.";
@@ -41,7 +41,7 @@
 
 "destination.title" = "Destination folder";
 "destination.subtitle" = "Drag the external SSD archive folder here, or choose one.";
-"destination.choose" = "Choose Destination";
+"destination.choose" = "Choose Destination…";
 "destination.warningRecursiveNested" = "Warning: recursive search is enabled and the destination is inside the source. Existing destination files may be picked up as input.";
 
 "rules.title" = "Organization rules";
@@ -62,3 +62,15 @@
 
 "mode.copy" = "Copy";
 "mode.move" = "Move";
+
+"organize.title" = "Organize photos and videos";
+"organize.subtitle" = "Choose your folders, then organize media by date.";
+"rules.advanced" = "Performance options";
+"mode.copyHelp" = "Keep the originals in the source folder.";
+"mode.moveHelp" = "Delete originals only after copying and verifying their contents.";
+"move.confirmTitle" = "Move files and remove originals?";
+"move.confirmMessage" = "Files from %@ will be copied to %@. After verification, the originals will be deleted. Files skipped because identical copies already exist will remain in the source folder.";
+"action.cancel" = "Cancel";
+"phase.movingFiles" = "Moving files…";
+"result.title" = "Results";
+"location.dropFolderOnly" = "Drop one folder at a time. Files cannot be selected here.";
