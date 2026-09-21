@@ -1,0 +1,5 @@
+• Redesigned the main window with clearer folder selection and organization rules.
+• Kept the action and progress visible when scrolling or using a smaller window.
+• Added confirmation before moving files and removing originals.
+• Added File menu commands and keyboard shortcuts.
+• Improved warning readability, folder drop validation, and processing status.

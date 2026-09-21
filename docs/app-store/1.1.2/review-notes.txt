@@ -1,0 +1,7 @@
+Phorganize is a local, sandboxed photo and video file organizer. No login, network service, in-app purchase, or external hardware is required.
+
+To review: select a source folder containing sample JPEG, RAW, or MOV files, select a different destination folder, review the organization rules, select Copy mode, and click Copy files. File menu shortcuts are Command-O for the source, Shift-Command-O for the destination, and Command-Return to start. Performance options are expandable.
+
+Version 1.1.2 reorganizes the native macOS interface, supports smaller windows, keeps actions and progress visible while scrolling, improves warning labels and folder drop validation, and disables configuration changes during processing. Move now asks for confirmation before processing; use disposable sample files. After copying, Move verifies SHA-256 content before deleting an unchanged source. Identical existing destination files are skipped, and skipped originals remain in place.
+
+All file processing stays on the device. The privacy manifest declares UserDefaults and user-selected file timestamp access. Privacy Policy and Support are available in the Help menu.
